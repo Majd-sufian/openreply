@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  const accountsToRefresh = await prisma.instagramAccount.findMany({
+  const accountsToRefresh = process.env.INSTAGRAM_UNIFIED_CONFIG_ID ? [] : await prisma.instagramAccount.findMany({
     where: {
       accessToken: { not: "" },
       provider: "META",

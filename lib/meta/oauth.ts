@@ -5,7 +5,7 @@ import {
   randomBytes,
   timingSafeEqual,
 } from "crypto";
-import { getEncryptionKeyHex, requireEnv } from "@/lib/env";
+import { getEncryptionKeyHex, getMetaGraphApiVersion, requireEnv } from "@/lib/env";
 
 // Instagram API with Instagram Login authorizes on www.instagram.com. The old
 // api.instagram.com/oauth/authorize host belonged to the retired Basic Display
@@ -88,6 +88,20 @@ export function verifyOAuthState(state: string | null): OAuthStatePayload | null
 }
 
 export function getAuthorizationUrl(redirectUri: string, state: string): string {
+  const configId = process.env.INSTAGRAM_UNIFIED_CONFIG_ID;
+  if (configId) {
+    const url = new URL("https://www.facebook.com/dialog/oauth");
+    url.search = new URLSearchParams({
+      client_id: requireEnv("INSTAGRAM_APP_ID"),
+      config_id: configId,
+      override_default_response_type: "true",
+      redirect_uri: redirectUri,
+      response_type: "code",
+      state,
+    }).toString();
+    return url.toString();
+  }
+
   const params = new URLSearchParams({
     client_id: requireEnv("INSTAGRAM_APP_ID"),
     redirect_uri: redirectUri,
@@ -130,6 +144,22 @@ export async function exchangeCodeForToken(
     accessToken: data.access_token,
     userId: String(data.user_id),
   };
+}
+
+export async function exchangeUnifiedCode(code: string, redirectUri: string): Promise<string> {
+  const url = new URL(`https://graph.facebook.com/${getMetaGraphApiVersion()}/oauth/access_token`);
+  url.search = new URLSearchParams({
+    client_id: requireEnv("INSTAGRAM_APP_ID"),
+    client_secret: requireEnv("INSTAGRAM_APP_SECRET"),
+    redirect_uri: redirectUri,
+    code,
+  }).toString();
+  const response = await fetch(url, { cache: "no-store", redirect: "error" });
+  const data = await response.json();
+  if (!response.ok || typeof data.access_token !== "string") {
+    throw new Error(`Meta Unified Login token exchange failed (HTTP ${response.status})`);
+  }
+  return data.access_token;
 }
 
 function getEncryptionKey(): Buffer {

@@ -3,10 +3,11 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
 import { getBaseUrl } from "@/lib/env";
 import { canConnectInstagramAccount } from "@/lib/instagram-accounts";
-import { getLongLivedToken, getUserInfo, subscribeInstagramAccountToWebhooks } from "@/lib/meta/client";
+import { getLongLivedToken, getUnifiedInstagramAccount, getUserInfo, subscribeInstagramAccountToWebhooks } from "@/lib/meta/client";
 import {
   encryptToken,
   exchangeCodeForToken,
+  exchangeUnifiedCode,
   verifyOAuthState,
 } from "@/lib/meta/oauth";
 import { canManageWorkspace } from "@/lib/workspace-access";
@@ -43,13 +44,10 @@ export async function GET(request: NextRequest) {
 
   try {
     const redirectUri = `${baseUrl}/api/instagram/callback`;
-    const { accessToken: shortLivedToken } = await exchangeCodeForToken(
-      code,
-      redirectUri
-    );
-    const { accessToken: longLivedToken, expiresIn } =
-      await getLongLivedToken(shortLivedToken);
-    const userInfo = await getUserInfo(longLivedToken);
+    const account = process.env.INSTAGRAM_UNIFIED_CONFIG_ID
+      ? await connectUnifiedAccount(code, redirectUri)
+      : await connectLegacyAccount(code, redirectUri);
+    const { accessToken: longLivedToken, profile: userInfo, expiresAt: tokenExpiresAt } = account;
     // Webhooks and the messaging API key off the professional account ID
     // (user_id), not the app-scoped `id`. Store user_id so comment webhooks
     // can be matched back to this account. Fall back to id if user_id is
@@ -67,7 +65,6 @@ export async function GET(request: NextRequest) {
     }
 
     const encryptedToken = encryptToken(longLivedToken);
-    const tokenExpiresAt = new Date(Date.now() + expiresIn * 1000);
 
     let webhookSubscribed = false;
     try {
@@ -125,4 +122,19 @@ export async function GET(request: NextRequest) {
       )}`
     );
   }
+}
+
+async function connectUnifiedAccount(code: string, redirectUri: string) {
+  const accessToken = await exchangeUnifiedCode(code, redirectUri);
+  return { accessToken, ...await getUnifiedInstagramAccount(accessToken) };
+}
+
+async function connectLegacyAccount(code: string, redirectUri: string) {
+  const short = await exchangeCodeForToken(code, redirectUri);
+  const token = await getLongLivedToken(short.accessToken);
+  return {
+    accessToken: token.accessToken,
+    profile: await getUserInfo(token.accessToken),
+    expiresAt: new Date(Date.now() + token.expiresIn * 1000),
+  };
 }

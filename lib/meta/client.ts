@@ -1,6 +1,7 @@
 import { getMetaGraphApiVersion, requireEnv } from "@/lib/env";
 
 function instagramGraphBase() {
+  if (process.env.INSTAGRAM_UNIFIED_CONFIG_ID) return facebookGraphBase();
   return `https://graph.instagram.com/${getMetaGraphApiVersion()}`;
 }
 
@@ -664,11 +665,21 @@ export async function getConversationMessages(
   return data.messages?.data ?? [];
 }
 
-export async function getUserInfo(accessToken: string): Promise<InstagramUser> {
-  const url = new URL(`${instagramGraphBase()}/me`);
+function instagramAccountPath(instagramId?: string): string {
+  if (!process.env.INSTAGRAM_UNIFIED_CONFIG_ID) return "me";
+  if (!instagramId || !/^\d+$/.test(instagramId)) {
+    throw new Error("Unified Login requires the authorized Instagram account ID");
+  }
+  return instagramId;
+}
+
+export async function getUserInfo(accessToken: string, instagramId?: string): Promise<InstagramUser> {
+  const url = new URL(`${instagramGraphBase()}/${instagramAccountPath(instagramId)}`);
   url.searchParams.set(
     "fields",
-    "id,user_id,username,name,profile_picture_url,followers_count"
+    process.env.INSTAGRAM_UNIFIED_CONFIG_ID
+      ? "id,username,name,profile_picture_url,followers_count"
+      : "id,user_id,username,name,profile_picture_url,followers_count"
   );
   url.searchParams.set("access_token", accessToken);
 
@@ -684,9 +695,10 @@ const MEDIA_PAGE_SIZE = 100;
 
 export async function getUserMedia(
   accessToken: string,
-  limit = 25
+  limit = 25,
+  instagramId?: string
 ): Promise<InstagramMedia[]> {
-  const url = new URL(`${instagramGraphBase()}/me/media`);
+  const url = new URL(`${instagramGraphBase()}/${instagramAccountPath(instagramId)}/media`);
   url.searchParams.set("fields", MEDIA_FIELDS);
   url.searchParams.set("limit", limit.toString());
   url.searchParams.set("access_token", accessToken);
@@ -704,11 +716,12 @@ export async function getUserMedia(
  */
 export async function getAllUserMedia(
   accessToken: string,
-  max = 500
+  max = 500,
+  instagramId?: string
 ): Promise<InstagramMedia[]> {
   const results: InstagramMedia[] = [];
 
-  const first = new URL(`${instagramGraphBase()}/me/media`);
+  const first = new URL(`${instagramGraphBase()}/${instagramAccountPath(instagramId)}/media`);
   first.searchParams.set("fields", MEDIA_FIELDS);
   first.searchParams.set("limit", String(Math.min(MEDIA_PAGE_SIZE, max)));
   first.searchParams.set("access_token", accessToken);
@@ -887,4 +900,46 @@ export async function debugToken(inputToken: string, accessToken: string) {
   url.searchParams.set("access_token", accessToken);
   const response = await fetch(url.toString());
   return handleResponse(response);
+}
+
+/** Resolve the Instagram asset granted in the Business Login dialog. */
+export async function getUnifiedInstagramAccount(accessToken: string) {
+  const appId = requireEnv("INSTAGRAM_APP_ID");
+  const url = new URL(`${facebookGraphBase()}/debug_token`);
+  url.searchParams.set("input_token", accessToken);
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${appId}|${requireEnv("INSTAGRAM_APP_SECRET")}` },
+    cache: "no-store",
+    redirect: "error",
+  });
+  if (!response.ok) throw new Error(`Meta token validation failed (HTTP ${response.status})`);
+  const { data } = await response.json() as {
+    data?: {
+      is_valid?: boolean;
+      app_id?: string;
+      expires_at?: number;
+      scopes?: string[];
+      granular_scopes?: { scope: string; target_ids?: string[] }[];
+    };
+  };
+  if (!data?.is_valid || data.app_id !== appId) {
+    throw new Error("Meta did not issue a valid token for this app");
+  }
+  const scopes = ["instagram_basic", "instagram_manage_comments", "instagram_manage_messages"];
+  const grants = data.granular_scopes ?? [];
+  const granted = new Set([...(data.scopes ?? []), ...grants.map(grant => grant.scope)]);
+  if (!scopes.every(scope => granted.has(scope))) {
+    throw new Error("Meta did not grant the required Instagram permissions");
+  }
+  const targets = scopes.map(scope => new Set(grants.filter(grant => grant.scope === scope)
+    .flatMap(grant => grant.target_ids ?? []))).filter(target => target.size > 0);
+  const ids = [...(targets[0] ?? [])].filter(id => /^\d+$/.test(id) &&
+    targets.every(target => target.has(id)));
+  if (ids.length !== 1) {
+    throw new Error("Authorize exactly one Instagram account with comment and message access");
+  }
+  return {
+    profile: await getUserInfo(accessToken, ids[0]),
+    expiresAt: data.expires_at ? new Date(data.expires_at * 1000) : null,
+  };
 }
