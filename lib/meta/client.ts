@@ -935,11 +935,15 @@ export async function getUnifiedInstagramAccount(accessToken: string) {
     .flatMap(grant => grant.target_ids ?? []))).filter(target => target.size > 0);
   const ids = [...(targets[0] ?? [])].filter(id => /^\d+$/.test(id) &&
     targets.every(target => target.has(id)));
-  if (ids.length !== 1) {
+  // Meta can omit granular target IDs for grants that apply to all assets.
+  // A self-hoster can pin an account; querying its profile with the granted
+  // token still requires Meta to authorize access to that account.
+  const selectedId = process.env.INSTAGRAM_UNIFIED_ACCOUNT_ID ?? (ids.length === 1 ? ids[0] : null);
+  if (!selectedId || !/^\d+$/.test(selectedId)) {
     throw new Error("Authorize exactly one Instagram account with comment and message access");
   }
   return {
-    profile: await getUserInfo(accessToken, ids[0]),
+    profile: await getUserInfo(accessToken, selectedId),
     expiresAt: data.expires_at ? new Date(data.expires_at * 1000) : null,
   };
 }
