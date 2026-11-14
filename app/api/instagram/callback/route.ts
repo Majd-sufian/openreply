@@ -19,6 +19,21 @@ export async function GET(request: NextRequest) {
   const baseUrl = getBaseUrl();
 
   if (error) {
+    if (state && process.env.INSTAGRAM_UNIFIED_CONFIG_ID) {
+      const details = Object.fromEntries(
+        ["error", "error_reason", "error_code", "error_subcode", "error_description"]
+          .flatMap(key => {
+            const value = request.nextUrl.searchParams.get(key);
+            // Only log short, conventional OAuth error strings. Do not copy
+            // callback URLs, credentials, or free-form input to the logs.
+            return value && /^[a-zA-Z0-9_ .,:;()'-]{1,160}$/.test(value)
+              && !/[A-Za-z0-9_-]{20,}/.test(value)
+              ? [[key, value]]
+              : [];
+          })
+      );
+      console.warn("[Instagram Callback] Meta declined authorization", details);
+    }
     return NextResponse.redirect(`${baseUrl}/settings?instagram=denied`);
   }
 
